@@ -2,7 +2,7 @@
 # coding: utf-8
 
 from __future__ import unicode_literals
-from main import elephant
+from new_main import megaskill
 import logging
 
 from flask import Flask
@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 logging.basicConfig(level=logging.DEBUG)
 
-app.register_blueprint(elephant)
+app.register_blueprint(megaskill)
 # app.run()
 
 app.debug = False
