@@ -239,6 +239,8 @@ class Sequences:
 		ingredient_added = ["Ингредиент {} добавлен. Что еще?"]
 		break_words = ["все", "конец", "достаточно", "хватит", "это все", "вроде все"]
 		auth_first = ["Сначала авторизуйтесь", "Войдите в аккаунт", "Скажите авторизация"]
+		empty_ingredients = ["Все отменено, введите хотя бы один ингредиент"]
+		break_ingredients = ["Количество добавленных ингредиентов {}"]
 
 		def start_handle(data, req, res):
 			user_id = req["session"]["user_id"]
@@ -279,20 +281,26 @@ class Sequences:
 			res["response"]["text"] = random.choice(Sequences.CreatePage.ingredient_added).format(ingredient)
 			return res
 
-		def ingredient_break(req):
+		def ingredient_break(req, res):
 			text =  req["request"]["original_utterance"].lower()
 			user_id = req["session"]["user_id"]
 			break_loop = text in Sequences.CreatePage.break_words
 			if break_loop:
 				if not sessionStorage[user_id]["details"]["ingredients"]:
 					Commands.cancel(req, {"response": {"text": None}})
-				return True
-			return False
+					res["response"]["text"] = random.choice(Sequences.CreatePage.empty_ingredients)
+					return {"ok": True, "response": res}
+
+				res["response"]["text"] = random.choice(Sequences.CreatePage.break_ingredients).format(len(sessionStorage[user_id]["details"]["ingredients"]))
+				return {"ok": True, "response": res}
+
+			return {"ok": False, "response": None}
 
 		def finish_handle(data, req, res):
 			user_id = req['session']['user_id']
 			page = Sequences.CreatePage.sample_page
 			ingredients = sessionStorage[user_id]["details"]["ingredients"]
+			sessionStorage[user_id]["details"]["ingredients"] = []
 			for i in ingredients:
 				item = copy.deepcopy(Sequences.CreatePage.sample_item)
 				item["children"][0] = i
@@ -450,8 +458,8 @@ def handle(req, res):
 		if text in command["variants"]:
 			current_command = command
 
-	# If user session is new, initializing new empty session and sending help
-	if req['session']['new']:
+	# If user session is new or the session isnt started, initializing new empty session and sending help
+	if req['session']['new'] or user_id not in sessionStorage:
 		sessionStorage[user_id] = {
 			"process": {
 				"sequence": None,
@@ -501,10 +509,10 @@ def handle(req, res):
 		# so the harder one)))
 		# if action type is loop, then checking condition to break the loop
 		if action["type"] == "loop":
-			break_loop = action["break"](req)
-			if break_loop:
+			break_loop = action["break"](req, res)
+			if break_loop["ok"]:
 
-				# if the loop was broken, then sending onLoopFinish response
+				# if the loop was broken, then sending onLoopFinish response and appending iteration
 				Helper.append_iteration(req)
 				return break_loop["response"]
 
@@ -512,7 +520,6 @@ def handle(req, res):
 			validated = action["validate"](req, res)
 			Helper.append_loop_iteration(req)
 			if validated["ok"]:
-				Helper.append_iteration(req)
 				return action["handle"](validated["response"], req, res)
 
 			# if data is invalid, sending validation function response
