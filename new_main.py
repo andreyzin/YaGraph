@@ -101,6 +101,7 @@ class Sequences:
 		def start_handle(data, req, res):
 			user_id = req["session"]["user_id"]
 			if sessionStorage[user_id]["details"].get("authed"):
+				Commands.cancel(req, res)
 				res["response"]["text"] = random.choice(Sequences.Authorize.already_authed)
 				return res
 			res["response"]["text"] = random.choice(Sequences.Authorize.start_auth)
@@ -131,6 +132,7 @@ class Sequences:
 		finish_reg = ["Ура, вы зарегестрировались!", "Регистрация прошла успешно!", "Пять минут, полет нормальный!"]
 		start_reg = ["Итак, поехали! Как вас зовут?", "Ваше имя?"]
 		enter_pass = ["Прекрасно, {}! Придумайте кодовую фразу. Если ошибка, то попробуйте другую фразу"]
+		already_authed = ["Вы уже авторизованы", "Хмм, кто-то пофиксил этот баг"]
 
 		def login_validate(req, res):
 			name = req["request"]["nlu"]["entities"]
@@ -173,6 +175,11 @@ class Sequences:
 			return res
 
 		def start_handle(data, req, res):
+			user_id = req["session"]["user_id"]
+			if sessionStorage[user_id]["details"].get("authed"):
+				Commands.cancel(req, res)
+				res["response"]["text"] = random.choice(Sequences.Register.already_authed)
+				return res
 			res["response"]["text"] = random.choice(Sequences.Register.start_reg)
 			return res
 
@@ -235,12 +242,17 @@ class Sequences:
 		]
 
 		start_creating = ["Что готовим?"]
-		page_created = ["Страница {} создана. Перечислите ингредиенты. Чтобы изменить ингриедиент, завершите их перечисление."]
-		ingredient_added = ["Ингредиент {} добавлен. Что еще?"]
+		page_created = ["Страница {} создана. Перечислите ингредиенты, затем скажите хватит"]
 		break_words = ["все", "конец", "достаточно", "хватит", "это все", "вроде все"]
 		auth_first = ["Сначала авторизуйтесь", "Войдите в аккаунт", "Скажите авторизация"]
+
 		empty_ingredients = ["Все отменено, введите хотя бы один ингредиент"]
-		break_ingredients = ["Количество добавленных ингредиентов {}"]
+		break_ingredients = ["Количество добавленных ингредиентов {}. Перечислите шаги приготовления, затем скажите хватит"]
+		ingredient_added = ["Ингредиент {} добавлен. Что еще?"]
+
+		empty_steps = ["Все отменено, введите хотя бы один шаг приготовления"]
+		break_steps = ["Ваша страница создана - {}", "Ура! Тут ваш рецепт - {}"]
+		step_added = ["Записала. Что дальше?"]
 
 		def start_handle(data, req, res):
 			user_id = req["session"]["user_id"]
@@ -259,6 +271,7 @@ class Sequences:
 			user_id = req['session']['user_id']
 			name = sessionStorage[user_id]["details"]["login"]
 			sessionStorage[user_id]["details"]["ingredients"] = []
+			sessionStorage[user_id]["details"]["steps"] = []
 			a = Helper.create_page(title, name)
 			sessionStorage[user_id]["details"]["page_url"] = a["result"]["url"]
 			conn = sqlite3.connect(db_path)
@@ -276,7 +289,6 @@ class Sequences:
 
 		def ingredient_handle(ingredient, req, res):
 			user_id = req['session']['user_id']
-			ingredients = sessionStorage[user_id]["details"].get("ingredients")
 			sessionStorage[user_id]["details"]["ingredients"].append(ingredient)
 			res["response"]["text"] = random.choice(Sequences.CreatePage.ingredient_added).format(ingredient)
 			return res
@@ -296,18 +308,30 @@ class Sequences:
 
 			return {"ok": False, "response": None}
 
-		def finish_handle(data, req, res):
+		def step_validate(req, res):
+			return {"ok": True, "response": req["request"]["original_utterance"].lower().capitalize()}
+
+		def step_handle(step, req, res):
 			user_id = req['session']['user_id']
-			page = Sequences.CreatePage.sample_page
-			ingredients = sessionStorage[user_id]["details"]["ingredients"]
-			sessionStorage[user_id]["details"]["ingredients"] = []
-			for i in ingredients:
-				item = copy.deepcopy(Sequences.CreatePage.sample_item)
-				item["children"][0] = i
-				page[1]["children"].append(item)
-			Helper.edit_page(sessionStorage[user_id]["details"]["page_url"].split("/")[-1], content = page)
-			res["response"]["text"] = "Страница создана - " + sessionStorage[user_id]["details"]["page_url"]
+			sessionStorage[user_id]["details"]["steps"].append(step)
+			res["response"]["text"] = random.choice(Sequences.CreatePage.step_added).format(step)
 			return res
+
+		def step_break(req, res):
+			text =  req["request"]["original_utterance"].lower()
+			user_id = req["session"]["user_id"]
+			break_loop = text in Sequences.CreatePage.break_words
+			if break_loop:
+				if not sessionStorage[user_id]["details"]["steps"]:
+					Commands.cancel(req, {"response": {"text": None}})
+					res["response"]["text"] = random.choice(Sequences.CreatePage.empty_steps)
+				else:
+					res["response"]["text"] = random.choice(Sequences.CreatePage.break_steps).format(sessionStorage[user_id]["details"]["page_url"])
+				Helper.update_page(req)
+				return {"ok": True, "response": res}
+
+			return {"ok": False, "response": None}
+
 
 		sequence = [
 			{
@@ -328,8 +352,11 @@ class Sequences:
 				"break": ingredient_break
 			},
 			{
-				"type": "start",
-				"handle": finish_handle
+				"type": "loop",
+				"action_name": "steps_input",
+				"validate": step_validate,
+				"handle": step_handle,
+				"break": step_break
 			}
 		]
 
@@ -406,6 +433,23 @@ commands = [
 ]
 
 class Helper:
+
+	def update_page(req):
+		user_id = req['session']['user_id']
+		page = Sequences.CreatePage.sample_page
+		ingredients = sessionStorage[user_id]["details"]["ingredients"]
+		steps = sessionStorage[user_id]["details"]["steps"]
+		sessionStorage[user_id]["details"]["ingredients"] = []
+		sessionStorage[user_id]["details"]["steps"] = []
+		for i in ingredients:
+			item = copy.deepcopy(Sequences.CreatePage.sample_item)
+			item["children"][0] = i
+			page[1]["children"].append(item)
+		for i in steps:
+			item = copy.deepcopy(Sequences.CreatePage.sample_item)
+			item["children"][0] = i
+			page[3]["children"].append(item)
+		Helper.edit_page(sessionStorage[user_id]["details"]["page_url"].split("/")[-1], content = page)
 
 	def create_page(title, author):
 		a = API.createPage(access_token = TeleAPI.user["access_token"], title = title, content = '[{"tag":"p","children":["Hello, world!"]}]', author_name = author + "(YaGraph)", author_url = TeleAPI.main_page)
